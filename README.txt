@@ -22,7 +22,7 @@ UAVPAL Disco modem compatibility changes summary
 - This allows uavpal_disco.sh/uavpal_unload.sh to trigger for non-Huawei modems too.
 
 Notes:
-- These 5 files represent the core functional modem compatibility work.
+- These 6 files represent the core functional modem compatibility work.
 - Other file differences on the drone backup (APN/keys/phone/zerotier/version) are environment-specific and not required for generic modem logic.
 
 TODO Coverage (original uavpal_disco.sh)
