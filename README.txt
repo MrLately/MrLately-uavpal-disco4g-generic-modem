@@ -1,15 +1,15 @@
 UAVPAL Disco modem compatibility changes summary
 
-1) diff_uavpal_disco.sh.txt
+1) diff_uavpal_disco.sh
 - Main modem startup flow rewrite: adds profile-based handling (auto/huawei_hilink/huawei_stick/generic_ethernet/generic_ppp), better auto-detection, Ethernet->PPP fallback, and connection profile tracking.
 
-2) diff_uavpal_globalfunctions.sh.txt
+2) diff_uavpal_globalfunctions.sh
 - Adds shared modem helpers: config loader, USB ID matching, usb_modeswitch control, network/serial interface detection, stronger Ethernet/PPP connect handling, and keep-alive improvements.
 
-3) diff_uavpal_unload.sh.txt
+3) diff_uavpal_unload.sh
 - Makes disconnect/unload safer: avoids false unload on transient re-enumeration, supports broader modem IDs, cleans routes/temp files more safely.
 
-4) diff_uavpal_glympse.sh.txt
+4) diff_uavpal_glympse.sh
 - Improves status reporting path selection (HiLink vs serial), safer serial device handling, and cleaner modem signal reporting fallback.
 - Adds generic Ethernet modem API fallback via /reqproc/proc_get (ZTE-style hostless WebUI clones).
 - Maps network_type + signalbar into Glympse label values (for example: 4G/80%) instead of Cell/n/a when serial and HiLink APIs are unavailable.
@@ -17,7 +17,7 @@ UAVPAL Disco modem compatibility changes summary
 5) NEW_modem.conf
 - New modem config file with defaults for profile mode, accepted USB IDs (including 19d2:*), iface/serial auto settings, and optional modeswitch/HiLink tuning.
 
-6) 70-huawei-e3372.rules
+6) diff_70-huawei-e3372.rules
 - Updates udev USB trigger matching from Huawei-only (ATTRS{idVendor}=="12d1") to generic USB device events (SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device").
 - This allows uavpal_disco.sh/uavpal_unload.sh to trigger for non-Huawei modems too.
 
