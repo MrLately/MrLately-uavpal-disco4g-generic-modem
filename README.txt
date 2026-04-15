@@ -25,6 +25,10 @@ Files in this folder:
 5) NEW_modem.conf
 - New modem config file with defaults for profile mode, accepted USB IDs (including 19d2:*), iface/serial auto settings, and optional modeswitch/HiLink tuning.
 
+6) 70-huawei-e3372.rules
+- Updates udev USB trigger matching from Huawei-only (ATTRS{idVendor}=="12d1") to generic USB device events (SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device").
+- This allows uavpal_disco.sh/uavpal_unload.sh to trigger for non-Huawei modems too.
+
 Notes:
 - These 5 files represent the core functional modem compatibility work.
 - Other file differences on the drone backup (APN/keys/phone/zerotier/version) are environment-specific and not required for generic modem logic.
