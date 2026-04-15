@@ -1,5 +1,7 @@
 UAVPAL Disco modem compatibility changes summary
 
+Added diff_ and NEW_ to the files so its easy to follow and look at the code side by side. If anyone is using these files take those off.
+
 1) diff_uavpal_disco.sh
 - Main modem startup flow rewrite: adds profile-based handling (auto/huawei_hilink/huawei_stick/generic_ethernet/generic_ppp), better auto-detection, Ethernet->PPP fallback, and connection profile tracking.
 
@@ -24,6 +26,7 @@ UAVPAL Disco modem compatibility changes summary
 Notes:
 - These 6 files represent the core functional modem compatibility work.
 - Other file differences on the drone backup (APN/keys/phone/zerotier/version) are environment-specific and not required for generic modem logic.
+- I replaced the discos mod file with these.
 
 TODO Coverage (original uavpal_disco.sh)
 - TODO: make ppp_if dynamic if possible
