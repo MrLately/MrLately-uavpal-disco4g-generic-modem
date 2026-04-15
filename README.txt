@@ -1,13 +1,5 @@
 UAVPAL Disco modem compatibility changes summary
 
-Baseline used for diff:
-- C:\Users\autog\Desktop\discostuff\disco4g-master\disco\uavpal
-
-Compared backup used:
-- C:\Users\autog\Desktop\1\_\uavpal
-
-Files in this folder:
-
 1) diff_uavpal_disco.sh.txt
 - Main modem startup flow rewrite: adds profile-based handling (auto/huawei_hilink/huawei_stick/generic_ethernet/generic_ppp), better auto-detection, Ethernet->PPP fallback, and connection profile tracking.
 
