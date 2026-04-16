@@ -722,12 +722,13 @@ check_modem_link_ethernet()
 		modem_link_gateway=$(route -n 2>/dev/null | awk -v dev="$cdc_if" '$1=="0.0.0.0" && $8==dev {print $2; exit}')
 	fi
 
+	# Link health should be based on modem iface and routing state only.
+	# Some modems/gateways drop ICMP even when data is healthy.
 	if [ -n "$modem_link_gateway" ]; then
-		ping -W 2 -c 1 "$modem_link_gateway" >/dev/null 2>&1 && return 0
-		return 1
+		return 0
 	fi
 
-	return 0
+	return 1
 }
 
 check_modem_link_stick()
