@@ -133,7 +133,6 @@ Known Notes
 - Some Huawei stick firmware variants expose limited AT metadata.
 - In those cases, signal percentage may still be available while RAT may remain generic (Cell).
 - HiLink APIs can return auth errors (125002) depending on firmware/login policy.
-- Environment-specific files (APN/keys/phone/zerotier/version) are intentionally excluded from this compatibility scope.
 
 Rollback
 Restore previous *.bak script copies on aircraft, then reboot.
