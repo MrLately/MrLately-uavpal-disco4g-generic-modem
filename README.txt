@@ -1,39 +1,47 @@
-UAVPAL Disco modem compatibility changes summary
+# UAVPAL Disco 4G Generic Modem Compatibility (Field Snapshot)
 
-Added diff_ and NEW_ to the files so its easy to follow and look at the code side by side. If anyone is using these files take those off.
+Last validated: April 16, 2026
 
-1) diff_uavpal_disco.sh
-- Main modem startup flow rewrite: adds profile-based handling (auto/huawei_hilink/huawei_stick/generic_ethernet/generic_ppp), better auto-detection, Ethernet->PPP fallback, and connection profile tracking.
+## Purpose
+This repo contains the UAVPAL files proven on-aircraft for multi-modem compatibility (Huawei HiLink, Huawei stick mode, and generic Ethernet clones).
 
-2) diff_uavpal_globalfunctions.sh
-- Adds shared modem helpers: config loader, USB ID matching, usb_modeswitch control, network/serial interface detection, stronger Ethernet/PPP connect handling, and keep-alive improvements.
+## Canonical Source
+Files are synced from the aircraft backup at:
+`C:\Users\autog\Desktop\1\_\uavpal`
 
-3) diff_uavpal_unload.sh
-- Makes disconnect/unload safer: avoids false unload on transient re-enumeration, supports broader modem IDs, cleans routes/temp files more safely.
+## Included Files
+- `bin/uavpal_disco.sh`
+- `bin/uavpal_globalfunctions.sh`
+- `bin/uavpal_glympse.sh`
+- `bin/uavpal_unload.sh`
+- `conf/70-huawei-e3372.rules`
+- `conf/modem.conf` (new)
 
-4) diff_uavpal_glympse.sh
-- Improves status reporting path selection (HiLink vs serial), safer serial device handling, and cleaner modem signal reporting fallback.
-- Adds generic Ethernet modem API fallback via /reqproc/proc_get (ZTE-style hostless WebUI clones).
-- Maps network_type + signalbar into Glympse label values (for example: 4G/80%) instead of Cell/n/a when serial and HiLink APIs are unavailable.
+## What Changed
+1. Profile-based modem handling (auto / huawei_hilink / huawei_stick / generic_ethernet / generic_ppp).
+2. Better detection, serial/interface handling, safer unload/reconnect behavior.
+3. Glympse telemetry fallback improvements:
+- HiLink API path for supported routers.
+- ZTE-style `/reqproc/proc_get` fallback for hostless clones.
+- AT-command fallback for stick mode (`AT+CSQ`, with Huawei `AT^SYSINFO*` fallback logic).
+4. Connection hardening in `uavpal_globalfunctions.sh`:
+- separate modem-link vs internet checks,
+- reconnect only after consecutive failures,
+- reconnect backoff to reduce thrashing.
 
-5) NEW_modem.conf
-- New modem config file with defaults for profile mode, accepted USB IDs (including 19d2:*), iface/serial auto settings, and optional modeswitch/HiLink tuning.
+## Known Limitations
+- Some Huawei stick variants return limited AT metadata; you may get `Cell/<percent>%` instead of explicit `4G/<percent>%`.
+- HiLink API may require auth depending on firmware/web UI config.
 
-6) diff_70-huawei-e3372.rules
-- Updates udev USB trigger matching from Huawei-only (ATTRS{idVendor}=="12d1") to generic USB device events (SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device").
-- This allows uavpal_disco.sh/uavpal_unload.sh to trigger for non-Huawei modems too.
+## Deploy
+Replace files on drone under `/data/ftp/uavpal/`, then:
+- `chmod +x /data/ftp/uavpal/bin/uavpal_*.sh`
+- restart glympse or reboot.
 
-Notes:
-- These 6 files represent the core functional modem compatibility work.
-- Other file differences on the drone backup (APN/keys/phone/zerotier/version) are environment-specific and not required for generic modem logic.
-- I replaced the discos mod file with these.
+## Verify
+- `cat /tmp/modem_connection_profile`
+- `ulogcat -d | grep -i "uavpal_glympse.*updating Glympse label" | tail -n 15`
+- `ulogcat -d | grep -i "uavpal_connection_handler_.*reconnecting" | tail -n 20`
 
-TODO Coverage (original uavpal_disco.sh)
-- TODO: make ppp_if dynamic if possible
-  Addressed by modem.conf + load_modem_config (MODEM_PPP_IFACE), allowing configurable PPP interface.
-
-- TODO: make serial_ctrl_dev and serial_ppp_dev dynamic
-  Addressed by detect_serial_devices() auto discovery and PPP retry with swapped serial roles when first assignment fails.
-
-Implementation note:
-- Dynamic behavior is implemented via runtime detection/configuration rather than AT^NDISDUP-based explicit port assignment.
+## Rollback
+Restore `*.bak` script backups on aircraft and reboot.
