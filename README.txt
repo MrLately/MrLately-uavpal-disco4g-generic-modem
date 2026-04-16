@@ -58,9 +58,13 @@ What Changed
   - adds reconnect backoff (1s -> 2s -> 4s -> 8s, capped at 10s)
   - reduces reconnect thrash on transient packet loss
 - Adds link checks:
-  - Ethernet checks iface state and modem gateway reachability
+  - Ethernet checks iface state plus modem route/gateway presence (no ICMP dependency)
   - Stick checks PPP iface health
 - Tunes connection check timing to fail fast and recover faster.
+- Hardens Ethernet reconnect path:
+  - does not rely only on udhcpc console text parsing
+  - confirms modem IP and gateway from iface/route state with short settle retries
+  - reduces false "DHCP/router detection failed" during unplug/replug recovery.
 
 3) diff_uavpal_unload.sh
 - Safer unload/disconnect behavior.
