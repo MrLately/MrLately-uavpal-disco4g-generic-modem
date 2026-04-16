@@ -547,21 +547,56 @@ connect_stick()
 
 connection_handler_hilink()
 {
+	fail_count=0
+	backoff_sec=1
 	while true; do
+		check_modem_link_ethernet
+		link_ok=$?
 		check_connection
-		if [ $? -ne 0 ]; then
-			ulogger -s -t uavpal_connection_handler_hilink "... Internet connection lost, trying to reconnect"
-			hilink_api "post" "/api/dialup/mobile-dataswitch" "<request><dataswitch>0</dataswitch></request>"
-			sleep 1
-			hilink_api "post" "/api/dialup/mobile-dataswitch" "<request><dataswitch>1</dataswitch></request>"
-			killall -9 udhcpc
-			ifconfig ${cdc_if} down
-			if [ -f /tmp/hilink_router_ip ]; then
-				ip route del default via "$(cat /tmp/hilink_router_ip)" dev ${cdc_if} >/dev/null 2>&1
+		internet_ok=$?
+
+		if [ "$link_ok" -eq "0" ] && [ "$internet_ok" -eq "0" ]; then
+			fail_count=0
+			backoff_sec=1
+			sleep 5
+			continue
+		fi
+
+		fail_count=$((fail_count + 1))
+
+		# If modem link still looks healthy, tolerate brief Internet ping failures before reconnecting.
+		if [ "$link_ok" -eq "0" ] && [ "$internet_ok" -ne "0" ] && [ "$fail_count" -lt "4" ]; then
+			if [ "$fail_count" -eq "2" ]; then
+				ulogger -s -t uavpal_connection_handler_hilink "... transient Internet check failure detected (fail_count=${fail_count}), waiting before reconnect"
 			fi
-			rm -f /tmp/modem_gateway_ip /tmp/modem_ip
-			sleep 1
-			connect_hilink
+			sleep 5
+			continue
+		fi
+
+		# If modem link itself is bad, reconnect sooner.
+		if [ "$link_ok" -ne "0" ] && [ "$fail_count" -lt "2" ]; then
+			sleep 5
+			continue
+		fi
+
+		ulogger -s -t uavpal_connection_handler_hilink "... reconnecting (link_ok=${link_ok}, internet_ok=${internet_ok}, fail_count=${fail_count}, backoff=${backoff_sec}s)"
+		sleep "$backoff_sec"
+		ulogger -s -t uavpal_connection_handler_hilink "... toggling Hi-Link data connection and renewing Ethernet session"
+		hilink_api "post" "/api/dialup/mobile-dataswitch" "<request><dataswitch>0</dataswitch></request>"
+		sleep 1
+		hilink_api "post" "/api/dialup/mobile-dataswitch" "<request><dataswitch>1</dataswitch></request>"
+		killall -9 udhcpc
+		ifconfig ${cdc_if} down
+		if [ -f /tmp/hilink_router_ip ]; then
+			ip route del default via "$(cat /tmp/hilink_router_ip)" dev ${cdc_if} >/dev/null 2>&1
+		fi
+		rm -f /tmp/modem_gateway_ip /tmp/modem_ip
+		sleep 1
+		connect_hilink
+		fail_count=0
+		backoff_sec=$((backoff_sec * 2))
+		if [ "$backoff_sec" -gt "10" ]; then
+			backoff_sec=10
 		fi
 		sleep 5
 	done
@@ -569,18 +604,51 @@ connection_handler_hilink()
 
 connection_handler_ethernet()
 {
+	fail_count=0
+	backoff_sec=1
 	while true; do
+		check_modem_link_ethernet
+		link_ok=$?
 		check_connection
-		if [ $? -ne 0 ]; then
-			ulogger -s -t uavpal_connection_handler_ethernet "... Internet connection lost, trying to reconnect"
-			killall -9 udhcpc
-			ifconfig ${cdc_if} down
-			if [ -f /tmp/modem_gateway_ip ]; then
-				ip route del default via "$(cat /tmp/modem_gateway_ip)" dev ${cdc_if} >/dev/null 2>&1
+		internet_ok=$?
+
+		if [ "$link_ok" -eq "0" ] && [ "$internet_ok" -eq "0" ]; then
+			fail_count=0
+			backoff_sec=1
+			sleep 5
+			continue
+		fi
+
+		fail_count=$((fail_count + 1))
+
+		if [ "$link_ok" -eq "0" ] && [ "$internet_ok" -ne "0" ] && [ "$fail_count" -lt "4" ]; then
+			if [ "$fail_count" -eq "2" ]; then
+				ulogger -s -t uavpal_connection_handler_ethernet "... transient Internet check failure detected (fail_count=${fail_count}), waiting before reconnect"
 			fi
-			rm -f /tmp/modem_gateway_ip /tmp/modem_ip
-			sleep 1
-			connect_ethernet
+			sleep 5
+			continue
+		fi
+
+		if [ "$link_ok" -ne "0" ] && [ "$fail_count" -lt "2" ]; then
+			sleep 5
+			continue
+		fi
+
+		ulogger -s -t uavpal_connection_handler_ethernet "... reconnecting (link_ok=${link_ok}, internet_ok=${internet_ok}, fail_count=${fail_count}, backoff=${backoff_sec}s)"
+		sleep "$backoff_sec"
+		ulogger -s -t uavpal_connection_handler_ethernet "... renewing generic Ethernet modem session"
+		killall -9 udhcpc
+		ifconfig ${cdc_if} down
+		if [ -f /tmp/modem_gateway_ip ]; then
+			ip route del default via "$(cat /tmp/modem_gateway_ip)" dev ${cdc_if} >/dev/null 2>&1
+		fi
+		rm -f /tmp/modem_gateway_ip /tmp/modem_ip
+		sleep 1
+		connect_ethernet
+		fail_count=0
+		backoff_sec=$((backoff_sec * 2))
+		if [ "$backoff_sec" -gt "10" ]; then
+			backoff_sec=10
 		fi
 		sleep 5
 	done
@@ -588,27 +656,97 @@ connection_handler_ethernet()
 
 connection_handler_stick()
 { 
+	fail_count=0
+	backoff_sec=1
 	while true; do
+		check_modem_link_stick
+		link_ok=$?
 		check_connection
-		if [ $? -ne 0 ]; then
-			ulogger -s -t uavpal_connection_handler_stick "... Internet connection lost, trying to reconnect"
-			killall -9 pppd
-			killall -9 chat
-			ifconfig ${ppp_if} down
-			sleep 1
-			connect_stick
+		internet_ok=$?
+
+		if [ "$link_ok" -eq "0" ] && [ "$internet_ok" -eq "0" ]; then
+			fail_count=0
+			backoff_sec=1
+			sleep 5
+			continue
+		fi
+
+		fail_count=$((fail_count + 1))
+
+		if [ "$link_ok" -eq "0" ] && [ "$internet_ok" -ne "0" ] && [ "$fail_count" -lt "4" ]; then
+			if [ "$fail_count" -eq "2" ]; then
+				ulogger -s -t uavpal_connection_handler_stick "... transient Internet check failure detected (fail_count=${fail_count}), waiting before reconnect"
+			fi
+			sleep 5
+			continue
+		fi
+
+		if [ "$link_ok" -ne "0" ] && [ "$fail_count" -lt "2" ]; then
+			sleep 5
+			continue
+		fi
+
+		ulogger -s -t uavpal_connection_handler_stick "... reconnecting (link_ok=${link_ok}, internet_ok=${internet_ok}, fail_count=${fail_count}, backoff=${backoff_sec}s)"
+		sleep "$backoff_sec"
+		ulogger -s -t uavpal_connection_handler_stick "... restarting PPP session"
+		killall -9 pppd
+		killall -9 chat
+		ifconfig ${ppp_if} down
+		sleep 1
+		connect_stick
+		fail_count=0
+		backoff_sec=$((backoff_sec * 2))
+		if [ "$backoff_sec" -gt "10" ]; then
+			backoff_sec=10
 		fi
 		sleep 5
 	done
 }
 
+check_modem_link_ethernet()
+{
+	if [ -z "$cdc_if" ] || [ ! -d "/proc/sys/net/ipv4/conf/${cdc_if}" ]; then
+		return 1
+	fi
+
+	ifconfig "${cdc_if}" 2>/dev/null | grep -q "RUNNING" || return 1
+
+	modem_link_gateway=""
+	if [ -f /tmp/modem_gateway_ip ]; then
+		modem_link_gateway=$(head -1 /tmp/modem_gateway_ip | tr -d '\r\n' | tr -d '\n')
+	fi
+	if [ -z "$modem_link_gateway" ]; then
+		modem_link_gateway=$(ip route 2>/dev/null | awk -v dev="$cdc_if" '$1=="default" && $5==dev {print $3; exit}')
+	fi
+	if [ -z "$modem_link_gateway" ]; then
+		modem_link_gateway=$(route -n 2>/dev/null | awk -v dev="$cdc_if" '$1=="0.0.0.0" && $8==dev {print $2; exit}')
+	fi
+
+	if [ -n "$modem_link_gateway" ]; then
+		ping -W 2 -c 1 "$modem_link_gateway" >/dev/null 2>&1 && return 0
+		return 1
+	fi
+
+	return 0
+}
+
+check_modem_link_stick()
+{
+	if [ -z "$ppp_if" ] || [ ! -d "/proc/sys/net/ipv4/conf/${ppp_if}" ]; then
+		return 1
+	fi
+
+	ifconfig "${ppp_if}" 2>/dev/null | grep -q "RUNNING" || return 1
+	return 0
+}
+
 check_connection()
 {
-	ping_retries_per_destination=2
+	ping_retries_per_destination=1
 	ping_destinations="8.8.8.8 192.5.5.241 199.7.83.42" # google-public-dns-a.google.com, f.root-servers.org, l.root-servers.org
 	for check in $ping_destinations; do
 		for i in $(seq 1 $ping_retries_per_destination); do
-			ping -W 5 -c 1 $check >/dev/null 2>&1
+			ping -W 2 -c 1 $check >/dev/null 2>&1
 			if [ $? -eq 0 ]; then
 				return 0
 			fi
