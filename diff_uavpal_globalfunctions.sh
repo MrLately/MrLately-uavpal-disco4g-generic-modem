@@ -203,11 +203,32 @@ connect_ethernet()
 	modem_ip=$(echo "$dhcp_out" | awk '/obtained/ { print $4; exit }')
 	modem_gateway_ip=$(echo "$dhcp_out" | awk '/router/ { for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\./) { print $i; exit } }')
 
+	# udhcpc output formatting varies by firmware/busybox build.
+	# Confirm modem IP and gateway from interface/route state as well.
+	for i in $(seq 1 4); do
+		if [ -z "$modem_ip" ]; then
+			modem_ip=$(ifconfig "${cdc_if}" 2>/dev/null | awk '/inet addr:/{ split($2, a, ":"); print a[2]; exit }')
+		fi
+		if [ -z "$modem_ip" ]; then
+			modem_ip=$(ifconfig "${cdc_if}" 2>/dev/null | awk '/inet /{ print $2; exit }')
+		fi
+		if [ -z "$modem_gateway_ip" ]; then
+			modem_gateway_ip=$(ip route 2>/dev/null | awk -v dev="${cdc_if}" '$1=="default" && $5==dev { print $3; exit }')
+		fi
+		if [ -z "$modem_gateway_ip" ]; then
+			modem_gateway_ip=$(route -n 2>/dev/null | awk -v dev="${cdc_if}" '$1=="0.0.0.0" && $8==dev { print $2; exit }')
+		fi
+		if [ -n "$modem_ip" ] && [ -n "$modem_gateway_ip" ]; then
+			break
+		fi
+		sleep 1
+	done
+
 	if [ -z "$modem_gateway_ip" ]; then
-		modem_gateway_ip=$(ip route 2>/dev/null | awk '$1=="default" { print $3; exit }')
+		modem_gateway_ip=$(ip route 2>/dev/null | awk -v dev="${cdc_if}" '$1=="default" && $5==dev { print $3; exit }')
 	fi
 	if [ -z "$modem_gateway_ip" ]; then
-		modem_gateway_ip=$(route -n 2>/dev/null | awk '$1=="0.0.0.0" { print $2; exit }')
+		modem_gateway_ip=$(route -n 2>/dev/null | awk -v dev="${cdc_if}" '$1=="0.0.0.0" && $8==dev { print $2; exit }')
 	fi
 	if [ -z "$modem_gateway_ip" ] && [ -n "$modem_ip" ]; then
 		modem_gateway_ip="$(echo "$modem_ip" | cut -d '.' -f 1,2,3).1"
