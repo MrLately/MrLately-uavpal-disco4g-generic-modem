@@ -162,8 +162,10 @@ detect_serial_devices()
 	serial_dev_count=$(echo "$serial_candidates" | awk '{ print NF }')
 
 	if [ "$MODEM_SERIAL_CTRL" = "auto" ] || [ -z "$MODEM_SERIAL_CTRL" ]; then
-		if [ -n "$first_dev" ]; then
-			serial_ctrl_dev=$(basename "$first_dev")
+		if ! probe_serial_ctrl_dev 1; then
+			if [ -n "$first_dev" ]; then
+				serial_ctrl_dev=$(basename "$first_dev")
+			fi
 		fi
 	fi
 
@@ -172,6 +174,16 @@ detect_serial_devices()
 			serial_ppp_dev=$(basename "$second_dev")
 		elif [ -n "$first_dev" ]; then
 			serial_ppp_dev=$(basename "$first_dev")
+		fi
+		if [ -n "$serial_ctrl_dev" ] && [ "$serial_ppp_dev" = "$serial_ctrl_dev" ] && [ "$serial_dev_count" -gt 1 ]; then
+			for dev in $serial_candidates; do
+				[ -c "$dev" ] || continue
+				candidate=$(basename "$dev")
+				if [ "$candidate" != "$serial_ctrl_dev" ]; then
+					serial_ppp_dev="$candidate"
+					break
+				fi
+			done
 		fi
 	fi
 
@@ -253,30 +265,59 @@ hilink_api()
 	url="$2"
 	data="$3"
 
-	hilink_router_ip=$(cat /tmp/hilink_router_ip)
-	sessionInfo=$(/data/ftp/uavpal/bin/curl -s -X GET "http://${hilink_router_ip}/api/webserver/SesTokInfo" 2>/dev/null)
-	if [ "$?" -ne "0" ]; then ulogger -s -t uavpal_hilink_api "... Error connecting to Hi-Link API"; fi
-	cookie=$(echo "$sessionInfo" | grep "SessionID=" | cut -b 10-147)
-	token=$(echo "$sessionInfo" | grep "TokInfo" | cut -b 10-41)
+	if [ -f /tmp/hilink_router_ip ]; then
+		hilink_router_ip=$(head -1 /tmp/hilink_router_ip | tr -d '\r\n' | tr -d '\n')
+	fi
+	if [ -z "$hilink_router_ip" ]; then
+		return
+	fi
+
+	sessionInfo=$(/data/ftp/uavpal/bin/curl -s -m 3 -X GET "http://${hilink_router_ip}/api/webserver/SesTokInfo" -H "X-Requested-With: XMLHttpRequest" -H "Referer: http://${hilink_router_ip}/" 2>/dev/null)
+	if [ "$?" -ne "0" ] || [ -z "$sessionInfo" ]; then
+		ulogger -s -t uavpal_hilink_api "... Error connecting to Hi-Link API"
+		return
+	fi
+	cookie=$(echo "$sessionInfo" | xmllint --xpath 'string(//SesInfo)' - 2>/dev/null | tr -d '\r\n' | tr -d '\n')
+	token=$(echo "$sessionInfo" | xmllint --xpath 'string(//TokInfo)' - 2>/dev/null | tr -d '\r\n' | tr -d '\n')
+	if [ -z "$cookie" ]; then
+		cookie=$(echo "$sessionInfo" | sed -n 's:.*<SesInfo>\([^<]*\)</SesInfo>.*:\1:p' | head -n 1 | tr -d '\r\n' | tr -d '\n')
+	fi
+	if [ -z "$token" ]; then
+		token=$(echo "$sessionInfo" | sed -n 's:.*<TokInfo>\([^<]*\)</TokInfo>.*:\1:p' | head -n 1 | tr -d '\r\n' | tr -d '\n')
+	fi
 	if [ -f /tmp/hilink_login_required ]; then
-		sessionInfoLogin=$(/data/ftp/uavpal/bin/curl -s -X POST "http://${hilink_router_ip}/api/user/login" -d "<request><Username>admin</Username><Password>$(echo -n "admin" |base64)</Password><password_type>3</password_type></request>" -H "Cookie: $cookie" -H "__RequestVerificationToken: $token" --dump-header - 2>/dev/null)
+		sessionInfoLogin=$(/data/ftp/uavpal/bin/curl -s -m 5 -X POST "http://${hilink_router_ip}/api/user/login" -d "<request><Username>admin</Username><Password>$(echo -n "admin" |base64)</Password><password_type>3</password_type></request>" -H "Cookie: $cookie" -H "__RequestVerificationToken: $token" -H "X-Requested-With: XMLHttpRequest" -H "Referer: http://${hilink_router_ip}/" --dump-header - 2>/dev/null)
 		if echo -n "$sessionInfoLogin" | grep '<code>108006\|<code>108007' ; then
 			ulogger -s -t uavpal_hilink_api "... Hi-Link authentication error. Please disable password protection or set it to user=admin, password=admin"
 			return # break out function
 		fi
-		cookie=$(echo -n "$sessionInfoLogin" | grep "SessionID=" | cut -d ':' -f2 | cut -d ';' -f1)
-		token=$(echo -n "$sessionInfoLogin" | grep "__RequestVerificationTokenone" | cut -d ':' -f2)
-		sessionInfoAdm=$(curl -s -X GET "http://${hilink_router_ip}/api/webserver/SesTokInfo" -H "Cookie: $cookie" 2>/dev/null)
-		token=$(echo "$sessionInfoAdm" | grep "TokInfo" | cut -b 10-41)
+		login_cookie=$(echo "$sessionInfoLogin" | tr -d '\r' | sed -n 's/^Set-Cookie:[[:space:]]*\([^;]*\).*/\1/p' | head -n 1 | tr -d '\r\n' | tr -d '\n')
+		if [ -n "$login_cookie" ]; then
+			cookie="$login_cookie"
+		fi
+		sessionInfoAdm=$(/data/ftp/uavpal/bin/curl -s -m 3 -X GET "http://${hilink_router_ip}/api/webserver/SesTokInfo" -H "Cookie: $cookie" -H "X-Requested-With: XMLHttpRequest" -H "Referer: http://${hilink_router_ip}/" 2>/dev/null)
+		token=$(echo "$sessionInfoAdm" | xmllint --xpath 'string(//TokInfo)' - 2>/dev/null | tr -d '\r\n' | tr -d '\n')
+		if [ -z "$token" ]; then
+			token=$(echo "$sessionInfoAdm" | sed -n 's:.*<TokInfo>\([^<]*\)</TokInfo>.*:\1:p' | head -n 1 | tr -d '\r\n' | tr -d '\n')
+		fi
 	fi
-	result=$(/data/ftp/uavpal/bin/curl -s -X $method "http://${hilink_router_ip}${url}" -d "$data" -H "Cookie: $cookie" -H "__RequestVerificationToken: $token" 2>/dev/null)
+	if [ "$method" = "POST" ]; then
+		result=$(/data/ftp/uavpal/bin/curl -s -m 4 -X POST "http://${hilink_router_ip}${url}" -d "$data" -H "Cookie: $cookie" -H "__RequestVerificationToken: $token" -H "X-Requested-With: XMLHttpRequest" -H "Referer: http://${hilink_router_ip}/" 2>/dev/null)
+	else
+		result=$(/data/ftp/uavpal/bin/curl -s -m 4 -X GET "http://${hilink_router_ip}${url}" -H "Cookie: $cookie" -H "__RequestVerificationToken: $token" -H "X-Requested-With: XMLHttpRequest" -H "Referer: http://${hilink_router_ip}/" 2>/dev/null)
+	fi
 	if echo "$result" | grep "<error>" ; then
-		if [ "$(echo $result | xmllint --xpath 'string(//error/code)' -)" -eq "100003" ]; then
-			ulogger -s -t uavpal_hilink_api "... Hi-Link authentication required. Trying to login using user=admin, password=admin"
-			touch /tmp/hilink_login_required
-			result=$(hilink_api "$1" "$2" "$3")
+		error_code=$(echo "$result" | xmllint --xpath 'string(//error/code)' - 2>/dev/null)
+		if [ "$error_code" = "100003" ] || [ "$error_code" = "125002" ]; then
+			if [ "${HILINK_AUTH_RETRY:-0}" -eq 0 ]; then
+				ulogger -s -t uavpal_hilink_api "... Hi-Link authentication required (error ${error_code}). Trying login using user=admin, password=admin"
+				touch /tmp/hilink_login_required
+				result=$(HILINK_AUTH_RETRY=1 hilink_api "$1" "$2" "$3")
+			else
+				ulogger -s -t uavpal_hilink_api "... Hi-Link authentication retry failed (error ${error_code})"
+			fi
 		else
-			ulogger -s -t uavpal_hilink_api "... Hi-Link returned Error Code: $(echo $result | xmllint --xpath 'string(//error/code)' -)"
+			ulogger -s -t uavpal_hilink_api "... Hi-Link returned Error Code: ${error_code}"
 		fi
 	fi
 	echo "$result"
@@ -297,14 +338,114 @@ conf_read()
 	echo "$result" |tr -d '\r\n' |tr -d '\n'
 }
 
+at_command_on_dev()
+{
+	dev="$1"
+	command="$2"
+	expected_response="$3"
+	timeout="$4"
+	result=$(/data/ftp/uavpal/bin/chat -V -t "$timeout" '' "$command" "$expected_response" '' > /dev/${dev} < /dev/${dev}) 2>&1
+	rc="$?"
+	echo "$result"
+	return "$rc"
+}
+
+probe_serial_ctrl_dev()
+{
+	probe_timeout="$1"
+	if [ -z "$probe_timeout" ]; then
+		probe_timeout="1"
+	fi
+
+	candidates=""
+	if [ -n "$serial_ctrl_dev" ] && [ -c "/dev/${serial_ctrl_dev}" ]; then
+		candidates="$candidates /dev/${serial_ctrl_dev}"
+	fi
+	for dev in /dev/ttyUSB* /dev/ttyACM*; do
+		[ -c "$dev" ] || continue
+		candidates="$candidates $dev"
+	done
+
+	seen=" "
+	for dev in $candidates; do
+		[ -c "$dev" ] || continue
+		candidate=$(basename "$dev")
+		case "$seen" in
+			*" $candidate "*)
+				continue
+				;;
+			*)
+				;;
+		esac
+		seen="$seen$candidate "
+		if [ -n "$serial_ppp_dev" ] && [ "$candidate" = "$serial_ppp_dev" ]; then
+			continue
+		fi
+		probe_result=$(at_command_on_dev "$candidate" "AT" "OK" "$probe_timeout")
+		if [ "$?" -eq "0" ] && echo "$probe_result" | grep -q "OK"; then
+			if [ "$serial_ctrl_dev" != "$candidate" ]; then
+				ulogger -s -t uavpal_at_command "... using ${candidate} as modem serial control interface"
+			fi
+			serial_ctrl_dev="$candidate"
+			echo "$serial_ctrl_dev" >/tmp/serial_ctrl_dev
+			return 0
+		fi
+	done
+
+	return 1
+}
+
 at_command()
 {
 	command="$1"
 	expected_response="$2"
 	timeout="$3"
-	result=$(/data/ftp/uavpal/bin/chat -V -t $timeout '' "$command" "$expected_response" '' > /dev/${serial_ctrl_dev} < /dev/${serial_ctrl_dev}) 2>&1
-	if [ "$?" -ne "0" ]; then ulogger -s -t uavpal_at_command "... Did not receive expected output from AT command $command"; fi
+
+	if [ -z "$timeout" ]; then
+		timeout="1"
+	fi
+
+	if [ -z "$serial_ctrl_dev" ] && [ -f /tmp/serial_ctrl_dev ]; then
+		serial_ctrl_dev=$(head -1 /tmp/serial_ctrl_dev | tr -d '\r\n' | tr -d '\n')
+	fi
+
+	if [ -z "$serial_ctrl_dev" ] || [ ! -c "/dev/${serial_ctrl_dev}" ]; then
+		probe_serial_ctrl_dev "$timeout" >/dev/null 2>&1
+	fi
+
+	if [ -z "$serial_ctrl_dev" ] || [ ! -c "/dev/${serial_ctrl_dev}" ]; then
+		ulogger -s -t uavpal_at_command "... no modem serial control interface available for AT command $command"
+		return 1
+	fi
+
+	result=$(at_command_on_dev "$serial_ctrl_dev" "$command" "$expected_response" "$timeout")
+	rc="$?"
+
+	retry_allowed=0
+	case "$command" in
+	AT\^SYSINFOEX* | AT+CSQ* | AT)
+		retry_allowed=1
+		;;
+	*)
+		;;
+	esac
+
+	if [ "$rc" -ne "0" ] && [ "$retry_allowed" -eq "1" ]; then
+		previous_serial_ctrl_dev="$serial_ctrl_dev"
+		serial_ctrl_dev=""
+		if probe_serial_ctrl_dev "$timeout" >/dev/null 2>&1 && [ -n "$serial_ctrl_dev" ] && [ "$serial_ctrl_dev" != "$previous_serial_ctrl_dev" ]; then
+			result=$(at_command_on_dev "$serial_ctrl_dev" "$command" "$expected_response" "$timeout")
+			rc="$?"
+		else
+			serial_ctrl_dev="$previous_serial_ctrl_dev"
+		fi
+	fi
+
+	if [ "$rc" -ne "0" ]; then
+		ulogger -s -t uavpal_at_command "... Did not receive expected output from AT command $command"
+	fi
 	echo "$result"
+	return "$rc"
 }
 
 send_message()
