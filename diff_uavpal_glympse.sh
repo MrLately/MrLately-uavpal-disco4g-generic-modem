@@ -170,80 +170,261 @@ do
 		fi
 
 		# reading out the modem's connection type and signal strength
-		if [ -f "/tmp/hilink_router_ip" ]; then
-			modeStr=$(hilink_api "get" "/api/device/information" | xmllint --xpath 'string(//workmode)' -)
-			if [ "$modeStr" == "LTE" ]; then
-				mode="4G"
-			elif [ "$modeStr" == "WCDMA" ]; then
-				mode="3G"
-			elif [ "$modeStr" == "GSM" ]; then
-				mode="2G"
-			else
-				mode="n/a"
-			fi
-			signalBars=$(hilink_api "get" "/api/monitoring/status" | xmllint --xpath 'string(//SignalIcon)' -)
-			signalPercentage=$(echo "$signalBars 20 * p" | /data/ftp/uavpal/bin/dc)%
-			signal="$mode/$signalPercentage"
-		elif [ -n "$serial_ctrl_dev" ] && [ -c "/dev/${serial_ctrl_dev}" ]; then
-			modeString=$(at_command "AT\^SYSINFOEX" "OK" "1" | grep "SYSINFOEX:" | tail -n 1)
-			modeNum=`echo $modeString | cut -d "," -f 8`
-			if [ $modeNum -ge 101 ]; then
-				mode="4G"
-			elif [ $modeNum -ge 23 ] && [ $modeNum -le 65 ]; then
-				mode="3G"
-			elif [ $modeNum -ge 1 ] && [ $modeNum -le 3 ]; then
-				mode="2G"
-			else
-				mode="n/a"
-			fi
-			signalString=$(at_command "AT+CSQ" "OK" "1" | grep "CSQ:" | tail -n 1)
-			signalRSSI=`echo $signalString | awk '{print $2}' | cut -d ',' -f 1`
-			if [ $signalRSSI -ge 0 ] && [ $signalRSSI -le 31 ]; then
-				signalPercentage=$(printf "%.0f\n" $(/data/ftp/uavpal/bin/dc -e "$(echo $signalRSSI) 1 + 3.13 * p"))%
-			else # including 99 for "Unknown or undetectable"
-				signalPercentage="n/a"
-			fi
-			signal="$mode/$signalPercentage"
-		elif [ -f "/tmp/modem_connection_profile" ] && [ "$(cat /tmp/modem_connection_profile)" = "generic_ethernet" ]; then
-			modem_api_ip=$(ip route | grep default | awk '{print $3}' | head -n 1)
-			if [ -z "$modem_api_ip" ]; then
-				modem_api_ip="192.168.8.1"
-			fi
-			# Generic ZTE-style API used by many clone hostless USB modems.
-			modem_info_json=$(/data/ftp/uavpal/bin/curl -q -m 2 -s "http://${modem_api_ip}/reqproc/proc_get?isTest=false&multi_data=1&cmd=network_type,signalbar,signalbar_ex,ppp_status")
-			modeStr=$(echo "$modem_info_json" | sed -n 's/.*"network_type":"\([^"]*\)".*/\1/p' | head -n 1)
-			signalBars=$(echo "$modem_info_json" | sed -n 's/.*"signalbar":"\([^"]*\)".*/\1/p' | head -n 1)
-			case "$modeStr" in
-				LTE|FDD\ LTE|TDD\ LTE)
-					mode="4G"
-					;;
-				NR5G*|5G*)
-					mode="5G"
-					;;
-				WCDMA|UMTS|HSPA*)
-					mode="3G"
-					;;
-				GSM|GPRS|EDGE)
-					mode="2G"
-					;;
-				"")
-					mode="Cell"
-					;;
-				*)
-					mode="$modeStr"
-					;;
-			esac
-			if echo "$signalBars" | grep -Eq '^[0-9]+$'; then
-				signalPercentage=$(echo "$signalBars 20 * p" | /data/ftp/uavpal/bin/dc)%
-			else
-				signalPercentage="n/a"
-			fi
-			signal="$mode/$signalPercentage"
-		else
-			mode="Cell"
-			signalPercentage="n/a"
-			signal="$mode/$signalPercentage"
+		modem_profile=""
+		if [ -f "/tmp/modem_connection_profile" ]; then
+			modem_profile=$(cat /tmp/modem_connection_profile | tr -d '\r\n' | tr -d '\n')
 		fi
+		mode=""
+		signalPercentage=""
+		huawei_auth_needed=0
+
+		modem_api_ip=$(ip route | grep default | awk '{print $3}' | head -n 1)
+		if [ -z "$modem_api_ip" ]; then
+			modem_api_ip="192.168.8.1"
+		fi
+
+		# 1) Hi-Link API helper for explicit Hi-Link profile.
+		if [ "$modem_profile" = "huawei_hilink" ]; then
+			modeStr=$(hilink_api "get" "/api/device/information" | xmllint --xpath 'string(//workmode)' - 2>/dev/null)
+			signalBars=$(hilink_api "get" "/api/monitoring/status" | xmllint --xpath 'string(//SignalIcon)' - 2>/dev/null)
+			if [ -z "$mode" ]; then
+				case "$modeStr" in
+					LTE)
+						mode="4G"
+						;;
+					NR5G*|5G*)
+						mode="5G"
+						;;
+					WCDMA|UMTS|HSPA*)
+						mode="3G"
+						;;
+					GSM|GPRS|EDGE)
+						mode="2G"
+						;;
+					"")
+						;;
+					*)
+						mode="$modeStr"
+						;;
+				esac
+			fi
+			if [ -z "$signalPercentage" ] && echo "$signalBars" | grep -Eq '^[0-9]+$'; then
+				signalPercentage=$(echo "$signalBars 20 * p" | /data/ftp/uavpal/bin/dc)%
+			fi
+		fi
+
+		# 2) Generic ZTE-style hostless modem API (clone modems).
+		if [ -z "$mode" ] || [ -z "$signalPercentage" ]; then
+			modem_info_json=$(/data/ftp/uavpal/bin/curl -q -m 2 -s "http://${modem_api_ip}/reqproc/proc_get?isTest=false&multi_data=1&cmd=network_type,signalbar,signalbar_ex,ppp_status" 2>/dev/null)
+			modeStr2=$(echo "$modem_info_json" | sed -n 's/.*"network_type":"\([^"]*\)".*/\1/p' | head -n 1)
+			signalBars2=$(echo "$modem_info_json" | sed -n 's/.*"signalbar":"\([^"]*\)".*/\1/p' | head -n 1)
+			if [ -z "$mode" ]; then
+				case "$modeStr2" in
+					LTE|FDD\ LTE|TDD\ LTE)
+						mode="4G"
+						;;
+					NR5G*|5G*)
+						mode="5G"
+						;;
+					WCDMA|UMTS|HSPA*)
+						mode="3G"
+						;;
+					GSM|GPRS|EDGE)
+						mode="2G"
+						;;
+					"")
+						;;
+					*)
+						mode="$modeStr2"
+						;;
+				esac
+			fi
+			if [ -z "$signalPercentage" ] && echo "$signalBars2" | grep -Eq '^[0-9]+$'; then
+				signalPercentage=$(echo "$signalBars2 20 * p" | /data/ftp/uavpal/bin/dc)%
+			fi
+		fi
+
+		# 3) Direct Huawei API probe (unauthenticated).
+		if [ -z "$mode" ] || [ -z "$signalPercentage" ]; then
+			hilink_info_xml=$(/data/ftp/uavpal/bin/curl -q -m 2 -s "http://${modem_api_ip}/api/device/information" 2>/dev/null)
+			hilink_status_xml=$(/data/ftp/uavpal/bin/curl -q -m 2 -s "http://${modem_api_ip}/api/monitoring/status" 2>/dev/null)
+
+			if echo "$hilink_info_xml" | grep -q "<error>"; then
+				hilink_info_err=$(echo "$hilink_info_xml" | xmllint --xpath 'string(//error/code)' - 2>/dev/null)
+				if [ "$hilink_info_err" = "100003" ] || [ "$hilink_info_err" = "125002" ]; then
+					huawei_auth_needed=1
+				fi
+			fi
+			if echo "$hilink_status_xml" | grep -q "<error>"; then
+				hilink_status_err=$(echo "$hilink_status_xml" | xmllint --xpath 'string(//error/code)' - 2>/dev/null)
+				if [ "$hilink_status_err" = "100003" ] || [ "$hilink_status_err" = "125002" ]; then
+					huawei_auth_needed=1
+				fi
+			fi
+
+			modeStr3=$(echo "$hilink_info_xml" | xmllint --xpath 'string(//workmode)' - 2>/dev/null)
+			signalBars3=$(echo "$hilink_status_xml" | xmllint --xpath 'string(//SignalIcon)' - 2>/dev/null)
+			if [ -z "$mode" ]; then
+				case "$modeStr3" in
+					LTE)
+						mode="4G"
+						;;
+					NR5G*|5G*)
+						mode="5G"
+						;;
+					WCDMA|UMTS|HSPA*)
+						mode="3G"
+						;;
+					GSM|GPRS|EDGE)
+						mode="2G"
+						;;
+					"")
+						;;
+					*)
+						mode="$modeStr3"
+						;;
+				esac
+			fi
+			if [ -z "$signalPercentage" ] && echo "$signalBars3" | grep -Eq '^[0-9]+$'; then
+				signalPercentage=$(echo "$signalBars3 20 * p" | /data/ftp/uavpal/bin/dc)%
+			fi
+		fi
+
+		# 4) Authenticated Huawei API retry for generic_ethernet when telemetry endpoints are protected.
+		if [ "$modem_profile" = "generic_ethernet" ] && [ "$huawei_auth_needed" -eq "1" ]; then
+			if [ -z "$mode" ] || [ -z "$signalPercentage" ]; then
+				saved_hilink_router_ip=""
+				had_hilink_router_ip=0
+				if [ -f "/tmp/hilink_router_ip" ]; then
+					saved_hilink_router_ip=$(cat /tmp/hilink_router_ip)
+					had_hilink_router_ip=1
+				fi
+
+				echo "$modem_api_ip" >/tmp/hilink_router_ip
+				touch /tmp/hilink_login_required
+				auth_info_xml=$(hilink_api "get" "/api/device/information")
+				auth_status_xml=$(hilink_api "get" "/api/monitoring/status")
+				rm -f /tmp/hilink_login_required
+
+				if [ "$had_hilink_router_ip" -eq "1" ]; then
+					echo "$saved_hilink_router_ip" >/tmp/hilink_router_ip
+				else
+					rm -f /tmp/hilink_router_ip
+				fi
+
+				modeStr4=$(echo "$auth_info_xml" | xmllint --xpath 'string(//workmode)' - 2>/dev/null)
+				signalBars4=$(echo "$auth_status_xml" | xmllint --xpath 'string(//SignalIcon)' - 2>/dev/null)
+				if [ -z "$mode" ]; then
+					case "$modeStr4" in
+						LTE)
+							mode="4G"
+							;;
+						NR5G*|5G*)
+							mode="5G"
+							;;
+						WCDMA|UMTS|HSPA*)
+							mode="3G"
+							;;
+						GSM|GPRS|EDGE)
+							mode="2G"
+							;;
+						"")
+							;;
+						*)
+							mode="$modeStr4"
+							;;
+					esac
+				fi
+				if [ -z "$signalPercentage" ] && echo "$signalBars4" | grep -Eq '^[0-9]+$'; then
+					signalPercentage=$(echo "$signalBars4 20 * p" | /data/ftp/uavpal/bin/dc)%
+				fi
+			fi
+		fi
+
+		# 5) Serial AT fallback (PPP sticks and mixed enumerations).
+		if [ -z "$mode" ] || [ -z "$signalPercentage" ]; then
+			if [ -z "$serial_ctrl_dev" ] || [ ! -c "/dev/${serial_ctrl_dev}" ]; then
+				for dev in /dev/ttyUSB* /dev/ttyACM*; do
+					if [ -c "$dev" ]; then
+						serial_ctrl_dev=$(basename "$dev")
+						break
+					fi
+				done
+			fi
+			if [ -n "$serial_ctrl_dev" ] && [ -c "/dev/${serial_ctrl_dev}" ]; then
+				if [ -z "$mode" ]; then
+					modeString=$(at_command "AT\^SYSINFOEX" "OK" "1" | grep "SYSINFOEX:" | tail -n 1)
+					modeNum=$(echo "$modeString" | cut -d "," -f 8 | tr -dc '0-9')
+					if echo "$modeNum" | grep -Eq '^[0-9]+$'; then
+						if [ "$modeNum" -ge 101 ]; then
+							mode="4G"
+						elif [ "$modeNum" -ge 23 ] && [ "$modeNum" -le 65 ]; then
+							mode="3G"
+						elif [ "$modeNum" -ge 1 ] && [ "$modeNum" -le 3 ]; then
+							mode="2G"
+						fi
+					fi
+				fi
+				if [ -z "$mode" ]; then
+					# SYSINFOEX is not supported by some Huawei stick firmware variants.
+					copsString=$(at_command "AT+COPS?" "OK" "1" | grep "+COPS:" | tail -n 1)
+					copsAct=$(echo "$copsString" | awk -F',' '{ gsub(/[^0-9]/, "", $4); print $4 }')
+					if echo "$copsAct" | grep -Eq '^[0-9]+$'; then
+						case "$copsAct" in
+						7 | 9 | 10)
+							mode="4G"
+							;;
+						11 | 12 | 13)
+							mode="5G"
+							;;
+						2 | 4 | 5 | 6)
+							mode="3G"
+							;;
+						0 | 1 | 3 | 8)
+							mode="2G"
+							;;
+						*)
+							;;
+						esac
+					fi
+				fi
+				if [ -z "$mode" ]; then
+					hcsqString=$(at_command "AT\^HCSQ?" "OK" "1" | grep "HCSQ:" | tail -n 1)
+					hcsqRat=$(echo "$hcsqString" | sed -n 's/.*"\([^"]*\)".*/\1/p' | tr '[:lower:]' '[:upper:]')
+					case "$hcsqRat" in
+					LTE)
+						mode="4G"
+						;;
+					NR5G* | 5G*)
+						mode="5G"
+						;;
+					WCDMA | UMTS | HSPA*)
+						mode="3G"
+						;;
+					GSM | GPRS | EDGE)
+						mode="2G"
+						;;
+					*)
+						;;
+					esac
+				fi
+				if [ -z "$signalPercentage" ]; then
+					signalString=$(at_command "AT+CSQ" "OK" "1" | grep "CSQ:" | tail -n 1)
+					signalRSSI=$(echo "$signalString" | awk '{print $2}' | cut -d ',' -f 1 | tr -dc '0-9')
+					if echo "$signalRSSI" | grep -Eq '^[0-9]+$' && [ "$signalRSSI" -ge 0 ] && [ "$signalRSSI" -le 31 ]; then
+						signalPercentage=$(printf "%.0f\n" $(/data/ftp/uavpal/bin/dc -e "$(echo "$signalRSSI") 1 + 3.13 * p"))%
+					fi
+				fi
+			fi
+		fi
+
+		if [ -z "$mode" ]; then
+			mode="Cell"
+		fi
+		if [ -z "$signalPercentage" ]; then
+			signalPercentage="n/a"
+		fi
+		signal="$mode/$signalPercentage"
 	fi
 	temp=""
 	tempfile="/sys/devices/platform/p7-temperature/iio:device1/in_temp7_p7mu_raw"
