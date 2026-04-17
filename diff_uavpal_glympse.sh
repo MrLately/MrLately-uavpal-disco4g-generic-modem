@@ -135,7 +135,7 @@ do
 		altitude_rel="0"
   fi
 
-	if [ `cat /tmp/sc2ping | wc -l` -eq '1' ]; then
+	if [ -s /tmp/sc2ping ] && [ `cat /tmp/sc2ping | wc -l` -eq '1' ]; then
 		latency=$(/data/ftp/uavpal/bin/dc -e "$(cat /tmp/sc2ping) 2 / p")ms
 	else
 		latency="n/a"
@@ -436,14 +436,21 @@ do
 	ulogger -s -t uavpal_glympse "... updating Glympse label ($(date +%Y-%m-%d-%H:%M:%S)): $droneLabel"
 
 	/data/ftp/uavpal/bin/curl -q -k -H "Content-Type: application/json" -H "Authorization: Bearer ${access_token}" -X POST -d "[[$(date +%s)000,$(gpsDecimal $lat $latdir),$(gpsDecimal $long $longdir),$speed,$heading]]" "https://api.glympse.com/v2/tickets/$ticket/append_location" &
+	curl_pid_location=$!
 	/data/ftp/uavpal/bin/curl -q -k -H "Content-Type: application/json" -H "Authorization: Bearer ${access_token}" -X POST -d "[{\"t\": $(date +%s)000, \"pid\": 0, \"n\": \"name\", \"v\": \"${droneLabel}\"}]" "https://api.glympse.com/v2/tickets/$ticket/append_data" &
+	curl_pid_data=$!
 
 	if test -n "$ip_sc2"; then
 		ping -c 1 $ip_sc2 |grep 'bytes from' | cut -d '=' -f 4 | tr -d ' ms' > /tmp/sc2ping &
+		ping_pid=$!
 	else
 		rm /tmp/sc2ping 2>/dev/null
+		ping_pid=""
 	fi
 	sleep 5
-	# make sure all curl processes have ended
-	while ps |grep curl |grep -v grep >/dev/null; do usleep 100000; done
+	wait $curl_pid_location 2>/dev/null
+	wait $curl_pid_data 2>/dev/null
+	if [ -n "$ping_pid" ]; then
+		wait $ping_pid 2>/dev/null
+	fi
 done
