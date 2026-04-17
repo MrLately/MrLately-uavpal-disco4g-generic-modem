@@ -12,6 +12,7 @@ load_modem_config()
 	MODEM_USB_MODESWITCH_ARGS="--huawei-new-mode -s 3"
 	MODEM_HILINK_DMZ="1"
 	MODEM_HILINK_FULLCONE_NAT="1"
+	MODEM_LOW_LATENCY_TXQLEN="100"
 
 	if [ -f /data/ftp/uavpal/conf/modem.conf ]; then
 		# shellcheck disable=SC1091
@@ -85,6 +86,73 @@ run_usb_modeswitch()
 list_network_ifaces()
 {
 	awk -F ':' 'NR>2 { gsub(/ /, "", $1); if ($1 != "") print $1 }' /proc/net/dev
+}
+
+apply_low_latency_queue()
+{
+	iface="$1"
+	target_qlen="$2"
+
+	[ -n "$iface" ] || return 1
+	[ -d "/proc/sys/net/ipv4/conf/${iface}" ] || return 1
+
+	case "$target_qlen" in
+	'' | *[!0-9]*)
+		return 1
+		;;
+	*)
+		;;
+	esac
+	[ "$target_qlen" -gt 0 ] || return 0
+
+	current_qlen=$(ifconfig "${iface}" 2>/dev/null | sed -n 's/.*txqueuelen:\([0-9][0-9]*\).*/\1/p' | head -n 1)
+	if [ -z "$current_qlen" ]; then
+		current_qlen=$(ip link show "${iface}" 2>/dev/null | sed -n 's/.*qlen \([0-9][0-9]*\).*/\1/p' | head -n 1)
+	fi
+
+	# Only reduce oversized queues. Never raise small queues (for example ppp txqueuelen 3).
+	if [ -n "$current_qlen" ] && [ "$current_qlen" -le "$target_qlen" ]; then
+		return 0
+	fi
+
+	if ifconfig "${iface}" txqueuelen "${target_qlen}" >/dev/null 2>&1; then
+		ulogger -s -t uavpal_queue "... set ${iface} txqueuelen=${target_qlen} (was ${current_qlen:-unknown})"
+		return 0
+	fi
+	if ip link set dev "${iface}" txqueuelen "${target_qlen}" >/dev/null 2>&1; then
+		ulogger -s -t uavpal_queue "... set ${iface} txqueuelen=${target_qlen} (was ${current_qlen:-unknown})"
+		return 0
+	fi
+
+	return 1
+}
+
+apply_low_latency_queues()
+{
+	case "$MODEM_LOW_LATENCY_TXQLEN" in
+	'' | *[!0-9]*)
+		return 0
+		;;
+	*)
+		;;
+	esac
+	[ "$MODEM_LOW_LATENCY_TXQLEN" -gt 0 ] || return 0
+
+	if [ -n "$cdc_if" ]; then
+		apply_low_latency_queue "$cdc_if" "$MODEM_LOW_LATENCY_TXQLEN"
+	fi
+	if [ -n "$ppp_if" ]; then
+		apply_low_latency_queue "$ppp_if" "$MODEM_LOW_LATENCY_TXQLEN"
+	fi
+	for iface in $(list_network_ifaces); do
+		case "$iface" in
+		zt*)
+			apply_low_latency_queue "$iface" "$MODEM_LOW_LATENCY_TXQLEN"
+			;;
+		*)
+			;;
+		esac
+	done
 }
 
 is_modem_net_iface_candidate()
@@ -198,6 +266,7 @@ connect_ethernet()
 {
 	ulogger -s -t uavpal_connect_ethernet "... bringing up modem network interface ${cdc_if}"
 	ifconfig "${cdc_if}" up
+	apply_low_latency_queues
 	ulogger -s -t uavpal_connect_ethernet "... requesting IP address from modem's DHCP server"
 	dhcp_out=$(udhcpc -i "${cdc_if}" -n -t 10 2>&1)
 	modem_ip=$(echo "$dhcp_out" | awk '/obtained/ { print $4; exit }')
@@ -349,8 +418,13 @@ firewall()
 	# Security: block incoming connections on the Internet interface
 	# these connections should only be allowed on Wi-Fi (eth0) and via zerotier (zt*)
 	ulogger -s -t uavpal_drone "... applying iptables security rules for interface ${1}"
+	iptables -N UAVPAL_INPUT 2>/dev/null
+	iptables -F UAVPAL_INPUT 2>/dev/null
+	if ! iptables -L INPUT -n 2>/dev/null | grep -q "UAVPAL_INPUT"; then
+		iptables -I INPUT -j UAVPAL_INPUT 2>/dev/null
+	fi
 	ip_block='21 23 51 61 873 8888 9050 44444 67 5353 14551'
-	for i in $ip_block; do iptables -I INPUT -p tcp -i ${1} --dport $i -j DROP; done
+	for i in $ip_block; do iptables -A UAVPAL_INPUT -p tcp -i ${1} --dport $i -j DROP; done
 }
 
 conf_read()
@@ -562,6 +636,7 @@ connect_stick()
 	fi
 
 	ulogger -s -t uavpal_connect_stick "... interface \"${ppp_if}\" is up"
+	apply_low_latency_queues
 	echo $serial_ctrl_dev >/tmp/serial_ctrl_dev
 	return 0
 }
@@ -571,6 +646,7 @@ connection_handler_hilink()
 	fail_count=0
 	backoff_sec=1
 	while true; do
+		apply_low_latency_queues
 		check_modem_link_ethernet
 		link_ok=$?
 		check_connection
@@ -628,6 +704,7 @@ connection_handler_ethernet()
 	fail_count=0
 	backoff_sec=1
 	while true; do
+		apply_low_latency_queues
 		check_modem_link_ethernet
 		link_ok=$?
 		check_connection
@@ -680,6 +757,7 @@ connection_handler_stick()
 	fail_count=0
 	backoff_sec=1
 	while true; do
+		apply_low_latency_queues
 		check_modem_link_stick
 		link_ok=$?
 		check_connection
