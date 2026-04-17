@@ -55,8 +55,20 @@ killall -9 curl
 killall -9 chat
 killall -9 pppd
 
-ulogger -s -t uavpal_drone "... clearing iptables rules"
-iptables -F INPUT
+ulogger -s -t uavpal_drone "... clearing UAVPAL iptables rules"
+iptables -D INPUT -j UAVPAL_INPUT 2>/dev/null
+iptables -F UAVPAL_INPUT 2>/dev/null
+iptables -X UAVPAL_INPUT 2>/dev/null
+# Backward compatibility: remove direct INPUT drop rules from older releases.
+legacy_ifaces="eth1 ppp0 ppp1 ppp2 ppp3"
+for ifname in $(ls /proc/sys/net/ipv4/conf 2>/dev/null | grep '^ppp'); do
+	legacy_ifaces="$legacy_ifaces $ifname"
+done
+for iface in $legacy_ifaces; do
+	for port in 21 23 51 61 873 8888 9050 44444 67 5353 14551; do
+		while iptables -D INPUT -p tcp -i $iface --dport $port -j DROP 2>/dev/null; do :; done
+	done
+done
 
 ulogger -s -t uavpal_drone "... clearing default route"
 if [ -f /tmp/hilink_router_ip ]; then
