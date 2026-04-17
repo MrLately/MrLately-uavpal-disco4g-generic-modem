@@ -10,6 +10,8 @@ serial_ctrl_dev="ttyUSB0"
 serial_ppp_dev="ttyUSB1"
 connection_profile=""
 ppp_modules_loaded=0
+modem_detect_timeout=300
+internet_wait_timeout=300
 
 # functions
 . /data/ftp/uavpal/bin/uavpal_globalfunctions.sh
@@ -135,6 +137,7 @@ sleep 1
 detect_usb_modem
 
 ulogger -s -t uavpal_drone "... detecting modem profile"
+modem_detect_started=$(date +%s)
 while true
 do
 	detect_cdc_iface
@@ -289,16 +292,25 @@ do
 		break 1
 	fi
 
+	if [ $(( $(date +%s) - modem_detect_started )) -ge $modem_detect_timeout ]; then
+		ulogger -s -t uavpal_drone "... ERROR: timeout while detecting/initializing modem profile"
+		exit 1
+	fi
 	usleep 100000
 done
 
 echo "${connection_profile}" >/tmp/modem_connection_profile
 ulogger -s -t uavpal_drone "... active modem profile: ${connection_profile}"
 
+internet_wait_started=$(date +%s)
 while true; do
 	check_connection
 	if [ $? -eq 0 ]; then
 		break # break out of loop
+	fi
+	if [ $(( $(date +%s) - internet_wait_started )) -ge $internet_wait_timeout ]; then
+		ulogger -s -t uavpal_drone "... ERROR: timeout waiting for public Internet connection"
+		exit 1
 	fi
 done
 ulogger -s -t uavpal_drone "... public Internet connection is up"
