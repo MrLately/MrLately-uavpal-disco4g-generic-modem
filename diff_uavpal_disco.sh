@@ -78,6 +78,75 @@ configure_hilink_features()
 	ulogger -s -t uavpal_drone "... software version: $(echo "$hilink_dev_info" | xmllint --xpath 'string(//SoftwareVersion)' -), WebUI version: $(echo "$hilink_dev_info" | xmllint --xpath 'string(//WebUIVersion)' -)"
 }
 
+start_telemetry_http_server()
+{
+	telemetry_dir="/tmp/uavpal_telemetry_www"
+	telemetry_file="/tmp/uavpal_telemetry.json"
+	telemetry_link="${telemetry_dir}/telemetry.json"
+	telemetry_pid_file="/tmp/uavpal_telemetry_httpd.pid"
+	telemetry_server_script="/tmp/uavpal_telemetry_server.sh"
+
+	mkdir -p "$telemetry_dir"
+	if [ ! -f "$telemetry_file" ]; then
+		printf '{"modem_signal_pct":null,"plane_battery_pct":null,"mode":"init","zt":"","ts":%s}\n' "$(date +%s)" > "$telemetry_file"
+	fi
+	ln -sf "$telemetry_file" "$telemetry_link"
+
+	if [ -f "$telemetry_pid_file" ]; then
+		old_pid=$(cat "$telemetry_pid_file" 2>/dev/null)
+		if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+			return 0
+		fi
+		rm -f "$telemetry_pid_file"
+	fi
+
+	if command -v httpd >/dev/null 2>&1; then
+		httpd -f -p 18080 -h "$telemetry_dir" >/dev/null 2>&1 &
+		new_pid=$!
+		sleep 1
+		if [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then
+			echo "$new_pid" > "$telemetry_pid_file"
+			ulogger -s -t uavpal_drone "... telemetry endpoint running on :18080/telemetry.json (httpd)"
+			return 0
+		fi
+	fi
+
+	if [ -x /bin/busybox ]; then
+		/bin/busybox httpd -f -p 18080 -h "$telemetry_dir" >/dev/null 2>&1 &
+		new_pid=$!
+		sleep 1
+		if [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then
+			echo "$new_pid" > "$telemetry_pid_file"
+			ulogger -s -t uavpal_drone "... telemetry endpoint running on :18080/telemetry.json (busybox httpd)"
+			return 0
+		fi
+	fi
+
+	if [ -x /bin/busybox ] && /bin/busybox | grep -w nc >/dev/null 2>&1; then
+		cat > "$telemetry_server_script" <<'EOF'
+#!/bin/sh
+while true; do
+	{
+		printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n'
+		cat /tmp/uavpal_telemetry.json 2>/dev/null || echo '{"modem_signal_pct":null,"plane_battery_pct":null,"mode":"init","zt":"","ts":0}'
+	} | nc -l -p 18080
+done
+EOF
+		chmod +x "$telemetry_server_script"
+		"$telemetry_server_script" >/dev/null 2>&1 &
+		new_pid=$!
+		sleep 1
+		if [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then
+			echo "$new_pid" > "$telemetry_pid_file"
+			ulogger -s -t uavpal_drone "... telemetry endpoint running on :18080/telemetry.json (nc fallback)"
+			return 0
+		fi
+	fi
+
+	ulogger -s -t uavpal_drone "... WARNING: telemetry endpoint could not start (no working httpd/nc)"
+	return 1
+}
+
 # main
 if ! detect_usb_modem; then
 	ulogger -s -t uavpal_drone "... USB event detected, but no configured modem USB ID matched (${MODEM_USB_IDS}) - exiting"
@@ -320,6 +389,9 @@ echo -e 'nameserver 8.8.8.8\nnameserver 8.8.4.4' >/etc/resolv.conf
 
 ulogger -s -t uavpal_drone "... setting date/time using ntp"
 ntpd -n -d -q -p 0.debian.pool.ntp.org -p 1.debian.pool.ntp.org -p 2.debian.pool.ntp.org -p 3.debian.pool.ntp.org
+
+ulogger -s -t uavpal_drone "... starting local telemetry endpoint"
+start_telemetry_http_server
 
 if [ -f /data/ftp/uavpal/conf/debug ]; then
 	debug_filename="/data/ftp/internal_000/Debug/ulog_debug_$(date +%Y%m%d%H%M%S).log"
