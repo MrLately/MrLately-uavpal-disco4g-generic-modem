@@ -158,15 +158,19 @@ do
 
 	ip_sc2=`netstat -nu |grep 9988 | head -1 | awk '{ print $5 }' | cut -d ':' -f 1`
 	ztConn=""
+	mode=""
+	signalPercentage=""
 	if [ `echo $ip_sc2 | awk -F. '{print $1"."$2"."$3}'` == "192.168.42" ]; then
 		signal="Wi-Fi"
 	else
 		# detect if zerotier connection is direct vs. relayed
-		if [ $(/data/ftp/uavpal/bin/zerotier-one -q listpeers |grep LEAF |grep $ztVersion |grep -v ' - ' | wc -l) != '0' ] && [ "$ip_sc2" != "" ]; then
-			ztConn=" [D]"
-		fi
-		if [ $(/data/ftp/uavpal/bin/zerotier-one -q listpeers |grep LEAF |grep $ztVersion |grep -v ' - ' | wc -l) == '0' ] && [ "$ip_sc2" != "" ]; then
-			ztConn=" [R]"
+		ztDirectCount=$(/data/ftp/uavpal/bin/zerotier-one -q listpeers | grep LEAF | grep -v ' - ' | wc -l | tr -d ' ')
+		if [ "$ip_sc2" != "" ]; then
+			if [ "$ztDirectCount" -gt 0 ]; then
+				ztConn=" [D]"
+			else
+				ztConn=" [R]"
+			fi
 		fi
 
 		# reading out the modem's connection type and signal strength
@@ -426,6 +430,37 @@ do
 		fi
 		signal="$mode/$signalPercentage"
 	fi
+
+	telemetry_mode=$(echo "$signal" | awk -F'/' '{print $1}')
+	if [ -z "$telemetry_mode" ]; then
+		telemetry_mode="Cell"
+	fi
+
+	telemetry_signal_raw=$(echo "$signal" | awk -F'/' 'NF>1 {print $2}')
+	telemetry_modem_signal_pct="null"
+	if echo "$telemetry_signal_raw" | grep -Eq '^[0-9]+%$'; then
+		telemetry_modem_signal_pct=$(echo "$telemetry_signal_raw" | tr -dc '0-9')
+	fi
+
+	telemetry_plane_battery_pct="null"
+	if echo "$bat_percent" | grep -Eq '^[0-9]+$'; then
+		telemetry_plane_battery_pct="$bat_percent"
+	fi
+
+	telemetry_zt=""
+	case "$ztConn" in
+		*"[D]"*) telemetry_zt="D" ;;
+		*"[R]"*) telemetry_zt="R" ;;
+	esac
+
+	telemetry_mode_escaped=$(echo "$telemetry_mode" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	telemetry_zt_escaped=$(echo "$telemetry_zt" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	telemetry_ts=$(date +%s)
+	cat > /tmp/uavpal_telemetry.json.tmp <<EOF
+{"modem_signal_pct":${telemetry_modem_signal_pct},"plane_battery_pct":${telemetry_plane_battery_pct},"mode":"${telemetry_mode_escaped}","zt":"${telemetry_zt_escaped}","ts":${telemetry_ts}}
+EOF
+	mv /tmp/uavpal_telemetry.json.tmp /tmp/uavpal_telemetry.json
+
 	temp=""
 	tempfile="/sys/devices/platform/p7-temperature/iio:device1/in_temp7_p7mu_raw"
 	if [ -f $tempfile ]; then
