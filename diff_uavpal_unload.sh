@@ -55,6 +55,17 @@ killall -9 curl
 killall -9 chat
 killall -9 pppd
 
+ulogger -s -t uavpal_drone "... stopping telemetry endpoint"
+if [ -f /tmp/uavpal_telemetry_httpd.pid ]; then
+	telemetry_httpd_pid=$(cat /tmp/uavpal_telemetry_httpd.pid 2>/dev/null)
+	if [ -n "$telemetry_httpd_pid" ]; then
+		kill "$telemetry_httpd_pid" >/dev/null 2>&1
+		sleep 1
+		kill -9 "$telemetry_httpd_pid" >/dev/null 2>&1
+	fi
+fi
+killall -9 uavpal_telemetry_server.sh >/dev/null 2>&1
+
 ulogger -s -t uavpal_drone "... clearing UAVPAL iptables rules"
 iptables -D INPUT -j UAVPAL_INPUT 2>/dev/null
 iptables -F UAVPAL_INPUT 2>/dev/null
@@ -85,6 +96,12 @@ rm -f /tmp/hilink_login_required
 rm -f /tmp/modem_gateway_ip
 rm -f /tmp/modem_ip
 rm -f /tmp/modem_connection_profile
+rm -f /tmp/uavpal_telemetry_httpd.pid
+rm -f /tmp/uavpal_telemetry.json
+rm -f /tmp/uavpal_telemetry.json.tmp
+rm -f /tmp/uavpal_telemetry_www/telemetry.json
+rm -f /tmp/uavpal_telemetry_server.sh
+rmdir /tmp/uavpal_telemetry_www 2>/dev/null
 
 ulogger -s -t uavpal_drone "... removing lock files"
 rm -f /tmp/lock/uavpal_disco
